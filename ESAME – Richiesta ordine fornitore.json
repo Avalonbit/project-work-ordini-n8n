@@ -1,0 +1,616 @@
+{
+  "name": "ESAME – Richiesta ordine fornitore",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "esame-ordine",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "7f529a5c-c307-4690-8df0-6d5991b444e3",
+      "name": "Webhook richiesta ordine",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        576,
+        80
+      ],
+      "webhookId": "b10b8f11-640d-4f70-b80f-5d1e841c7e7d"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1) INGRESSO E VALIDAZIONE: controllo i campi obbligatori PRIMA di scrivere su Supabase\nconst b = $input.first().json.body || {};\nconst errori = [];\nconst richiesta_id = String(b.richiesta_id ?? '').trim();\nconst fornitore = String(b.fornitore ?? '').trim();\nif (!richiesta_id) errori.push('Campo obbligatorio mancante: richiesta_id');\nif (!fornitore) errori.push('Campo obbligatorio mancante: fornitore');\nconst somma = {};\nif (!Array.isArray(b.righe) || b.righe.length === 0) {\n  errori.push('Campo obbligatorio mancante: righe (serve almeno un articolo)');\n} else {\n  b.righe.forEach((r, i) => {\n    const codice = String(r?.codice ?? '').trim().toUpperCase();\n    const q = Number(r?.quantita);\n    if (!codice) errori.push(`righe[${i}]: manca il codice`);\n    if (!Number.isInteger(q) || q <= 0) errori.push(`righe[${i}]: quantita deve essere un numero intero maggiore di 0`);\n    if (codice && Number.isInteger(q) && q > 0) somma[codice] = (somma[codice] || 0) + q; // stesso codice ripetuto => sommo\n  });\n}\nreturn [{ json: {\n  valido: errori.length === 0,\n  errori,\n  richiesta_id,\n  fornitore,\n  righe: Object.entries(somma).map(([codice, quantita]) => ({ codice, quantita }))\n} }];"
+      },
+      "id": "121da56e-ce47-4c6b-add4-d9e53e74e254",
+      "name": "Valida input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "649b95a2-c9cd-4de7-811f-98b02326a5c3",
+              "leftValue": "={{ $json.valido }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3ef3fa8c-afd6-4ee4-9bdc-9236807830e7",
+      "name": "Input valido?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1024,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ esito: 'errore', messaggio: 'Richiesta non valida: nulla è stato scritto nel database', errori: $json.errori }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "94635262-73c0-4372-9ae1-aa9020206ef7",
+      "name": "Rispondi: input non valido",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1248,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- 2) Leggo da Supabase: il fornitore esiste? la richiesta è già stata elaborata?\nselect $1::text as richiesta_id,\n       f.id     as fornitore_id,\n       f.nome   as fornitore,\n       f.pagamento,\n       r.id     as richiesta_pk,\n       r.stato,\n       r.esito,\n       case when r.id is not null then 'duplicato'\n            when f.id is null     then 'fornitore_sconosciuto'\n            else 'nuova' end as caso\nfrom (select 1) x\nleft join esame_fornitori f on lower(f.nome) = lower($2)\nleft join esame_richieste r on r.richiesta_id = $1",
+        "options": {
+          "queryReplacement": "={{ [ $json.richiesta_id, $json.fornitore ] }}"
+        }
+      },
+      "id": "746bd099-8b66-4ca8-b43f-8b445a8595c1",
+      "name": "Leggi stato richiesta",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1248,
+        -16
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ivavr0SpgHcIPzej",
+          "name": "Supabase Qwertycom"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "a9d370aa-5704-402b-a37d-631570c967b0",
+                    "leftValue": "={{ $json.caso }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "duplicato"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "duplicato"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "cba54050-cc74-45ce-b4d0-49de5eac05d4",
+                    "leftValue": "={{ $json.caso }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "fornitore_sconosciuto"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "fornitore sconosciuto"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "eb7be73f-0226-406a-8cd4-dc6d7ec76ce3",
+                    "leftValue": "={{ $json.caso }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "nuova"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "nuova"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "184f5533-04e3-44b1-bc21-87efa828105c",
+      "name": "Che caso è?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        1456,
+        -32
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ esito: 'ok', duplicato: true, messaggio: 'Richiesta già elaborata: restituisco l\\'esito registrato, nessuna nuova azione', richiesta_id: $json.richiesta_id, stato: $json.stato, risultato: $json.esito }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "077439de-b919-41e6-90a1-333c9b63ded5",
+      "name": "Rispondi: già elaborata",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1680,
+        -224
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ esito: 'errore', messaggio: 'Fornitore non presente in anagrafica: ' + $('Valida input').first().json.fornitore }) }}",
+        "options": {
+          "responseCode": 422
+        }
+      },
+      "id": "2818c684-774d-431a-bad5-81c23064ac5b",
+      "name": "Rispondi: fornitore sconosciuto",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1680,
+        -32
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- 3) Salvo la richiesta e le sue righe (UNIQUE su richiesta_id: un secondo invio non crea doppioni)\nwith nuova as (\n  insert into esame_richieste (richiesta_id, fornitore_id, stato)\n  values ($1, $2::bigint, 'ricevuta')\n  on conflict (richiesta_id) do nothing\n  returning id\n), righe as (\n  insert into esame_righe (richiesta_fk, codice, quantita_pezzi)\n  select n.id, x->>'codice', (x->>'quantita')::int\n  from nuova n, jsonb_array_elements($3::jsonb) x\n  returning richiesta_fk\n)\nselect n.id as richiesta_pk, (select count(*) from righe) as righe_salvate\nfrom nuova n",
+        "options": {
+          "queryReplacement": "={{ [ $json.richiesta_id, $json.fornitore_id, JSON.stringify($('Valida input').first().json.righe) ] }}"
+        }
+      },
+      "id": "4857bf76-2ff1-48d1-9ecb-b992267c05f4",
+      "name": "Registra richiesta e righe",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1680,
+        176
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ivavr0SpgHcIPzej",
+          "name": "Supabase Qwertycom"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- 4) Leggo da Supabase i dati utili all'agente (i numeri li calcola il database, non l'AI)\nselect q.id as richiesta_pk, q.richiesta_id, f.nome as fornitore, f.pagamento,\n  json_agg(json_build_object(\n    'codice', r.codice,\n    'descrizione', p.descrizione,\n    'a_catalogo', p.id is not null,\n    'quantita_pezzi', r.quantita_pezzi,\n    'pezzi_per_confezione', p.pezzi_per_confezione,\n    'confezioni', ceil(r.quantita_pezzi::numeric / p.pezzi_per_confezione),\n    'pezzi_mancanti_per_confezione_completa',\n       ceil(r.quantita_pezzi::numeric / p.pezzi_per_confezione) * p.pezzi_per_confezione - r.quantita_pezzi,\n    'importo', round(ceil(r.quantita_pezzi::numeric / p.pezzi_per_confezione) * p.prezzo_confezione, 2)\n  ) order by r.codice) as righe\nfrom esame_richieste q\njoin esame_fornitori f on f.id = q.fornitore_id\njoin esame_righe r     on r.richiesta_fk = q.id\nleft join esame_prodotti p on p.fornitore_id = q.fornitore_id and p.codice = r.codice\nwhere q.id = $1::bigint\ngroup by q.id, q.richiesta_id, f.nome, f.pagamento",
+        "options": {
+          "queryReplacement": "={{ [ $json.richiesta_pk ] }}"
+        }
+      },
+      "id": "d07e9dfb-88ad-4fde-9a0c-a0c714c73c24",
+      "name": "Leggi dati ordine",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1904,
+        176
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ivavr0SpgHcIPzej",
+          "name": "Supabase Qwertycom"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Richiesta {{ $json.richiesta_id }} – fornitore {{ $json.fornitore }} (pagamento {{ $json.pagamento }}).\nRighe dell'ordine:\n{{ JSON.stringify($json.righe) }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "Sei l'assistente acquisti di Qwertycom, un'azienda che vende su Amazon.\nRicevi le righe di un ordine a un fornitore, lette dal database. I numeri (confezioni, pezzi mancanti, importi) sono già calcolati: NON ricalcolarli e non inventare dati.\nCompiti:\n1. messaggio_fornitore: messaggio breve e cortese in italiano per il fornitore con l'elenco \"codice – numero di confezioni\". Escludi i codici non a catalogo.\n2. nota_magazzino: nota per il magazziniere con codice, descrizione e pezzi attesi per ogni articolo a catalogo.\n3. avvisi: elenca (a) i codici con a_catalogo = false, (b) le righe con pezzi_mancanti_per_confezione_completa > 0, indicando quanti pezzi mancano, (c) quantità anomale oltre 50 confezioni per codice. Se non ci sono avvisi restituisci una lista vuota.\n4. priorita: \"attenzione\" se la lista avvisi non è vuota, altrimenti \"normale\".\nRispondi solo nel formato richiesto."
+        }
+      },
+      "id": "774eb7ac-ecb2-4650-9825-316e3fefbf75",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        2128,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"messaggio_fornitore\": \"Buongiorno, vi inviamo il nostro ordine: ...\",\n  \"nota_magazzino\": \"In arrivo: ...\",\n  \"avvisi\": [\n    \"...\"\n  ],\n  \"priorita\": \"normale\"\n}"
+      },
+      "id": "732e63f4-fde4-4b0c-b52c-a305ad86417f",
+      "name": "Output strutturato",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        2240,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "d3de7194-70af-44de-9742-c97714616040",
+              "leftValue": "={{ $('Leggi dati ordine').first().json.pagamento }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "anticipato"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "17331b33-b8b9-4212-a39b-d013edddcaf3",
+      "name": "Pagamento anticipato?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2480,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- 6) Aggiornamento finale (una sola volta: solo se la richiesta è ancora 'ricevuta')\nwith conf as (\n  update esame_righe r\n  set confezioni = ceil(r.quantita_pezzi::numeric / p.pezzi_per_confezione)\n  from esame_richieste q, esame_prodotti p\n  where r.richiesta_fk = q.id and q.id = $1::bigint\n    and p.fornitore_id = q.fornitore_id and p.codice = r.codice\n  returning r.id\n)\nupdate esame_richieste\nset stato = 'in_attesa_pagamento', esito = $2::jsonb, aggiornato_il = now()\nwhere id = $1::bigint and stato = 'ricevuta'\nreturning richiesta_id, stato, esito",
+        "options": {
+          "queryReplacement": "={{ [ $('Leggi dati ordine').first().json.richiesta_pk, JSON.stringify(Object.assign({}, $('AI Agent').first().json.output, { righe: $('Leggi dati ordine').first().json.righe, prossimo_passo: 'Pagare la proforma: il pagamento vale come conferma' })) ] }}"
+        }
+      },
+      "id": "925a416b-00e1-4ec2-b4d2-76492cd43c01",
+      "name": "Salva: in attesa di pagamento",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2704,
+        80
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ivavr0SpgHcIPzej",
+          "name": "Supabase Qwertycom"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- 6) Aggiornamento finale (una sola volta: solo se la richiesta è ancora 'ricevuta')\nwith conf as (\n  update esame_righe r\n  set confezioni = ceil(r.quantita_pezzi::numeric / p.pezzi_per_confezione)\n  from esame_richieste q, esame_prodotti p\n  where r.richiesta_fk = q.id and q.id = $1::bigint\n    and p.fornitore_id = q.fornitore_id and p.codice = r.codice\n  returning r.id\n)\nupdate esame_richieste\nset stato = 'confermato', esito = $2::jsonb, aggiornato_il = now()\nwhere id = $1::bigint and stato = 'ricevuta'\nreturning richiesta_id, stato, esito",
+        "options": {
+          "queryReplacement": "={{ [ $('Leggi dati ordine').first().json.richiesta_pk, JSON.stringify(Object.assign({}, $('AI Agent').first().json.output, { righe: $('Leggi dati ordine').first().json.righe, prossimo_passo: 'Ordine confermato: pagamento a scadenza' })) ] }}"
+        }
+      },
+      "id": "3e2dc2a6-2c3e-44ec-a7e6-dda96ef918c8",
+      "name": "Salva: confermato",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2704,
+        288
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ivavr0SpgHcIPzej",
+          "name": "Supabase Qwertycom"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ esito: 'ok', duplicato: false, richiesta_id: $json.richiesta_id, stato: $json.stato, risultato: $json.esito }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "93669a59-ac51-456b-a806-02eb78924393",
+      "name": "Rispondi: esito",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2928,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-5",
+          "cachedResultName": "Claude Sonnet 5"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        1984,
+        384
+      ],
+      "id": "5d37a367-2265-437a-a70b-1c56704aa95e",
+      "name": "Anthropic Chat Model",
+      "credentials": {
+        "anthropicApi": {
+          "id": "o3p10IxvlMnsGHdp",
+          "name": "Anthropic account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook richiesta ordine": {
+      "main": [
+        [
+          {
+            "node": "Valida input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valida input": {
+      "main": [
+        [
+          {
+            "node": "Input valido?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input valido?": {
+      "main": [
+        [
+          {
+            "node": "Leggi stato richiesta",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rispondi: input non valido",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leggi stato richiesta": {
+      "main": [
+        [
+          {
+            "node": "Che caso è?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Che caso è?": {
+      "main": [
+        [
+          {
+            "node": "Rispondi: già elaborata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rispondi: fornitore sconosciuto",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Registra richiesta e righe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registra richiesta e righe": {
+      "main": [
+        [
+          {
+            "node": "Leggi dati ordine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leggi dati ordine": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Pagamento anticipato?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pagamento anticipato?": {
+      "main": [
+        [
+          {
+            "node": "Salva: in attesa di pagamento",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Salva: confermato",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Salva: in attesa di pagamento": {
+      "main": [
+        [
+          {
+            "node": "Rispondi: esito",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Salva: confermato": {
+      "main": [
+        [
+          {
+            "node": "Rispondi: esito",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Output strutturato": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "5cfb13dd-a1ed-46c3-8f5b-cd1786a6fed8",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "fe9d3738d09a99f935ca197ef2abc966bb20a038adaaf559710b7528256c64b9"
+  },
+  "nodeGroups": [],
+  "id": "GIv4ubofq1wpoD4m",
+  "tags": []
+}

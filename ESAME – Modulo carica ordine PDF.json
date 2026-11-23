@@ -1,0 +1,189 @@
+{
+  "name": "ESAME – Modulo carica ordine PDF",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Carica ordine fornitore",
+        "formDescription": "Carica il PDF del riepilogo ordine: il sistema lo legge, lo controlla e prepara i testi per fornitore e magazzino.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "ordine",
+              "fieldType": "file",
+              "multipleFiles": false,
+              "acceptFileTypes": ".pdf",
+              "requiredField": true
+            }
+          ]
+        },
+        "responseMode": "lastNode",
+        "options": {
+          "appendAttribution": false,
+          "respondWithOptions": {
+            "values": {
+              "formSubmittedText": "Ordine ricevuto ed elaborato. Esito disponibile nel sistema."
+            }
+          }
+        }
+      },
+      "id": "d2a2a4ba-f9b8-406c-9333-6ff0980192d2",
+      "name": "Modulo carica ordine",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "0f319ec8-0539-4d9e-bcb1-78ad7c8e10d0"
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "binaryPropertyName": "ordine",
+        "options": {}
+      },
+      "id": "53601dfc-a22f-4afe-90fb-833040691ad0",
+      "name": "Estrai testo dal PDF",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        224,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Legge il testo estratto dal PDF e lo trasforma nel JSON che il webhook si aspetta\nconst testo = String($input.first().json.text || '');\nconst righeTesto = testo.split(/\\r?\\n/).map(s => s.trim()).filter(Boolean);\nconst ETICHETTE = ['N° richiesta:', 'Fornitore:', 'Data:', 'Pagamento:', 'Codice'];\n\nfunction valore(etichetta) {\n  const i = righeTesto.findIndex(r => r.startsWith(etichetta));\n  if (i < 0) return '';\n  const resto = righeTesto[i].slice(etichetta.length).trim();\n  if (resto) return ETICHETTE.some(e => resto.startsWith(e)) ? '' : resto;\n  const dopo = righeTesto[i + 1] || '';\n  return ETICHETTE.some(e => dopo.startsWith(e)) ? '' : dopo;\n}\n\n// Articoli: dopo l'intestazione \"Quantità\", ogni codice è seguito dalla sua quantità \"N pz\"\nconst tabella = testo.slice(Math.max(0, testo.indexOf('Quantità')));\nconst righe = [...tabella.matchAll(/\\b([A-Z]{2,}-[A-Z0-9]+)\\b[\\s\\S]*?(\\d+)\\s*pz\\b/g)]\n  .map(m => ({ codice: m[1], quantita: Number(m[2]) }));\n\nconst body = { richiesta_id: valore('N° richiesta:'), righe };\nconst forn = valore('Fornitore:');\nif (forn) body.fornitore = forn;   // se manca nel PDF non lo invio: lo segnalerà la validazione\n\nreturn [{ json: { body } }];\n"
+      },
+      "id": "0512310a-3577-40b4-a758-f01788a287a2",
+      "name": "Leggi dati dal PDF",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/esame-ordine",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "bd963fa4-16bf-4590-913c-42c09605c6e3",
+      "name": "Invia al workflow ordini",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        672,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Trasforma la risposta del workflow d'esame in una pagina leggibile per chi ha caricato il PDF\nconst r = $input.first().json, b = r.body || {}, ris = b.risultato || {};\nconst a = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\\n/g, '<br>');\nlet html;\nif (r.statusCode === 400) {\n  html = `<h2>❌ Ordine non valido</h2><p>${a(b.messaggio)}</p><ul>${(b.errori || []).map(e => `<li>${a(e)}</li>`).join('')}</ul>`;\n} else if (b.esito !== 'ok') {\n  html = `<h2>❌ Errore</h2><p>${a(b.messaggio || ('Codice ' + r.statusCode))}</p>`;\n} else {\n  const titolo = b.duplicato ? '♻️ Ordine già elaborato: ti mostro l\\'esito salvato' : '✅ Ordine registrato';\n  html = `<h2>${titolo}</h2>\n<p><b>Richiesta:</b> ${a(b.richiesta_id)} – <b>Stato:</b> ${a(b.stato)} – <b>Priorità:</b> ${a(ris.priorita)}</p>\n${(ris.avvisi || []).length ? `<p><b>⚠️ Avvisi:</b></p><ul>${ris.avvisi.map(x => `<li>${a(x)}</li>`).join('')}</ul>` : ''}\n<p><b>Messaggio per il fornitore:</b><br>${a(ris.messaggio_fornitore)}</p>\n<p><b>Nota per il magazzino:</b><br>${a(ris.nota_magazzino)}</p>\n<p><b>Prossimo passo:</b> ${a(ris.prossimo_passo)}</p>`;\n}\nreturn [{ json: { html } }];\n"
+      },
+      "id": "b751291b-de41-44d6-a6bd-c96ebbf13e63",
+      "name": "Prepara riepilogo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": " // Crea 2 PDF dall'esito dell'ordine: \"Nota magazzino\" e \"Riepilogo ufficio acquisti\".\n// Solo per ordini NUOVI andati a buon fine (i duplicati non rigenerano documenti).\nconst r = $('Invia al workflow ordini').first().json;\nconst b = r.body || {}, ris = b.risultato || {};\nif (r.statusCode !== 200 || b.esito !== 'ok' || b.duplicato) {\n  return [{ json: { pdf_creati: false, motivo: b.duplicato ? 'Richiesta duplicata: documenti già creati la prima volta' : 'Ordine non valido: nessun documento' } }];\n}\n\n// ---------- mini generatore PDF (A4, font Helvetica) ----------\nfunction nuovoPdf() {\n  const W = 595, H = 842, M = 45, pagine = [];\n  let ops = [], y = H - M;\n  const MAP = { 8211: 0x96, 8212: 0x97, 8364: 0x80, 8217: 0x92, 8216: 0x91, 8220: 0x93, 8221: 0x94, 8226: 0x95, 8230: 0x85 };\n  const enc = s => { let o = ''; for (const ch of String(s ?? '')) { const c = ch.codePointAt(0);\n      const v = c < 256 ? c : MAP[c]; if (v === undefined) continue;\n      const t = String.fromCharCode(v); o += (t === '(' || t === ')' || t === '\\\\') ? '\\\\' + t : t; } return o; };\n  const larg = (s, size) => String(s).length * size * 0.5;\n  const nuovaPagina = () => { if (ops.length) pagine.push(ops.join('\\n')); ops = []; y = H - M; };\n  const spazio = h => { if (y - h < M + 20) nuovaPagina(); };\n  const testo = (x, yy, s, size = 10, bold = false, col = '0 0 0') =>\n    ops.push(`BT ${col} rg /${bold ? 'F2' : 'F1'} ${size} Tf ${x} ${yy} Td (${enc(s)}) Tj ET`);\n  const rett = (x, yy, w, h, col) => ops.push(`${col} rg ${x} ${yy} ${w} ${h} re f`);\n  const a_capo = (s, size, maxW) => {\n    const out = [];\n    String(s ?? '').split('\\n').forEach(par => {\n      let riga = '';\n      par.split(' ').forEach(p => { const t = riga ? riga + ' ' + p : p;\n        if (larg(t, size) > maxW && riga) { out.push(riga); riga = p; } else riga = t; });\n      out.push(riga);\n    });\n    return out;\n  };\n  const api = {\n    intestazione(titolo, sotto) {\n      testo(M, y - 14, 'QWERTYCOM S.R.L.S.', 16, true, '0.12 0.22 0.39'); y -= 30;\n      rett(M, y - 26, W - 2 * M, 26, '0.12 0.22 0.39'); testo(M + 10, y - 18, titolo, 13, true, '1 1 1'); y -= 40;\n      if (sotto) { testo(M, y, sotto, 9, false, '0.4 0.4 0.4'); y -= 18; }\n    },\n    campi(lista) { lista.forEach(([k, v]) => { spazio(16); testo(M, y, k + ':', 10, true); testo(M + 120, y, v, 10); y -= 16; }); y -= 6; },\n    titolo(s) { spazio(30); y -= 6; testo(M, y, s, 11, true, '0.12 0.22 0.39'); y -= 16; },\n    paragrafo(s, size = 10) { a_capo(s, size, W - 2 * M).forEach(l => { spazio(14); testo(M, y, l, size); y -= 14; }); y -= 4; },\n    tabella(col, righe, totale) {\n      const xs = []; let x = M; col.forEach(c => { xs.push(x); x += c[1]; });\n      spazio(40); rett(M, y - 6, W - 2 * M, 20, '0.85 0.89 0.95');\n      col.forEach((c, i) => testo(xs[i] + 5, y, c[0], 9, true, '0.12 0.22 0.39')); y -= 20;\n      righe.forEach((rr, n) => { spazio(20); if (n % 2) rett(M, y - 6, W - 2 * M, 20, '0.96 0.97 0.98');\n        rr.forEach((v, i) => testo(xs[i] + 5, y, a_capo(v, 9, col[i][1] - 8)[0], 9)); y -= 20; });\n      if (totale) { spazio(20); testo(xs[xs.length - 2] + 5, y, totale[0], 9, true); testo(xs[xs.length - 1] + 5, y, totale[1], 9, true); y -= 20; }\n      y -= 6;\n    },\n    async file(nome) {\n      nuovaPagina();\n      const obj = [], n = pagine.length, kids = pagine.map((_, i) => `${5 + 2 * i} 0 R`).join(' ');\n      obj.push('<< /Type /Catalog /Pages 2 0 R >>');\n      obj.push(`<< /Type /Pages /Kids [${kids}] /Count ${n} >>`);\n      obj.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');\n      obj.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');\n      pagine.forEach((p, i) => {\n        p += `\\nBT 0.55 0.55 0.55 rg /F1 8 Tf ${M} 25 Td (${enc('Documento generato automaticamente – pagina ' + (i + 1) + ' di ' + n)}) Tj ET`;\n        obj.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${W} ${H}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${6 + 2 * i} 0 R >>`);\n        obj.push(`<< /Length ${Buffer.byteLength(p, 'latin1')} >>\\nstream\\n${p}\\nendstream`);\n      });\n      let pdf = '%PDF-1.4\\n'; const off = [];\n      obj.forEach((o, i) => { off.push(Buffer.byteLength(pdf, 'latin1')); pdf += `${i + 1} 0 obj\\n${o}\\nendobj\\n`; });\n      const xref = Buffer.byteLength(pdf, 'latin1');\n      pdf += `xref\\n0 ${obj.length + 1}\\n0000000000 65535 f \\n` + off.map(o => String(o).padStart(10, '0') + ' 00000 n \\n').join('');\n      pdf += `trailer\\n<< /Size ${obj.length + 1} /Root 1 0 R >>\\nstartxref\\n${xref}\\n%%EOF`;\n      return await this_helpers.prepareBinaryData(Buffer.from(pdf, 'latin1'), nome, 'application/pdf');\n    }\n  };\n  return api;\n}\nconst this_helpers = this.helpers;\n// ----------------------------------------------------------------\n\nconst oggi = new Date().toLocaleDateString('it-IT');\nconst id = b.richiesta_id, righe = ris.righe || [];\nconst avvisi = (ris.avvisi || []).length ? ris.avvisi : ['Nessun avviso'];\nconst eur = n => n == null ? '–' : Number(n).toFixed(2).replace('.', ',') + ' €';\n\n// 1) Nota magazzino\nconst mag = nuovoPdf();\nmag.intestazione('NOTA MAGAZZINO – ' + id, 'Merce in arrivo da controllare al ricevimento');\nmag.campi([['Richiesta', id], ['Data', oggi], ['Priorità', ris.priorita || '']]);\nmag.tabella([['Codice', 100], ['Descrizione', 245], ['Pezzi attesi', 80], ['Confezioni', 80]],\n  righe.map(x => [x.codice, x.descrizione || 'NON A CATALOGO', String(x.quantita_pezzi ?? ''), x.confezioni == null ? '–' : String(x.confezioni)]));\nmag.titolo('Indicazioni per il magazzino'); mag.paragrafo(ris.nota_magazzino);\nmag.titolo('Avvisi'); avvisi.forEach(a => mag.paragrafo('• ' + a));\nmag.titolo('Controllo al ricevimento'); mag.paragrafo('Firma: ______________________     Data: ____________');\n\n// 2) Riepilogo ufficio acquisti\nconst uff = nuovoPdf();\nuff.intestazione('RIEPILOGO UFFICIO ACQUISTI – ' + id, 'Uso interno');\nuff.campi([['Richiesta', id], ['Data', oggi], ['Stato', b.stato], ['Priorità', ris.priorita || ''], ['Prossimo passo', ris.prossimo_passo || '']]);\nconst totale = righe.reduce((s, x) => s + (Number(x.importo) || 0), 0);\nuff.tabella([['Codice', 95], ['Descrizione', 200], ['Pezzi', 50], ['Confez.', 55], ['Importo', 105]],\n  righe.map(x => [x.codice, x.descrizione || 'NON A CATALOGO', String(x.quantita_pezzi ?? ''), x.confezioni == null ? '–' : String(x.confezioni), eur(x.importo)]),\n  ['Totale', eur(totale)]);\nuff.titolo('Avvisi'); avvisi.forEach(a => uff.paragrafo('• ' + a));\nuff.titolo('Messaggio da inviare al fornitore'); uff.paragrafo(ris.messaggio_fornitore);\n\nreturn [{ json: { pdf_creati: true, richiesta_id: id },\n  binary: { magazzino: await mag.file('Nota magazzino ' + id + '.pdf'), ufficio: await uff.file('Riepilogo ufficio ' + id + '.pdf') } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1104,
+        0
+      ],
+      "id": "f2baab92-b5dc-4fa4-9bd7-a5831016e3f7",
+      "name": "Crea PDF magazzino e ufficio"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Modulo carica ordine": {
+      "main": [
+        [
+          {
+            "node": "Estrai testo dal PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Estrai testo dal PDF": {
+      "main": [
+        [
+          {
+            "node": "Leggi dati dal PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leggi dati dal PDF": {
+      "main": [
+        [
+          {
+            "node": "Invia al workflow ordini",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Invia al workflow ordini": {
+      "main": [
+        [
+          {
+            "node": "Prepara riepilogo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepara riepilogo": {
+      "main": [
+        [
+          {
+            "node": "Crea PDF magazzino e ufficio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "438ccba7-f7a1-4f7d-87ed-f178c5623f77",
+  "meta": {
+    "instanceId": "fe9d3738d09a99f935ca197ef2abc966bb20a038adaaf559710b7528256c64b9"
+  },
+  "nodeGroups": [],
+  "id": "3rgY4uFCN5B025he",
+  "tags": []
+}
